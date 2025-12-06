@@ -72,7 +72,7 @@ router.get("/online", (req, res) => {
 setInterval(() => {
   const now = Date.now();
   for (const email in onlineUsers) {
-    if (now - onlineUsers[email] > 120000) {
+    if (now - onlineUsers[email] > 5000000) {
       console.log(`${email} is now offline.`);
       delete onlineUsers[email];
     }
