@@ -41,5 +41,21 @@ router.post("/login", async (req, res) => {
         res.status(500).json({ msg: "Server error" });
     }
 });
+let onlineDevices = {};
 
+router.post('/online', (req, res) => {
+    const { token, deviceId } = req.body;
+
+    if (!token || !deviceId) {
+        return res.status(400).json({ msg: 'Token and deviceId required' });
+    }
+
+    // Optional: verify token if you use JWT
+    // const decoded = jwt.verify(token, process.env.JWT_SECRET);
+
+    onlineDevices[deviceId] = { token, lastSeen: Date.now() };
+
+    console.log(`Device ${deviceId} is online!`);
+    return res.status(200).json({ msg: 'Device marked online' });
+});
 module.exports = router;
