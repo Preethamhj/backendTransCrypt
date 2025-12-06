@@ -43,19 +43,46 @@ router.post("/login", async (req, res) => {
 });
 let onlineDevices = {};
 
+let onlineUsers = {};
+
+// POST /online - mark user online
 router.post('/online', (req, res) => {
-    const { token, deviceId } = req.body;
+  const { email } = req.body;
 
-    if (!token || !deviceId) {
-        return res.status(400).json({ msg: 'Token and deviceId required' });
-    }
+  if (!email) {
+    return res.status(400).json({ msg: 'Email is required' });
+  }
 
-    // Optional: verify token if you use JWT
-    // const decoded = jwt.verify(token, process.env.JWT_SECRET);
+  // Mark the user as online with current timestamp
+  onlineUsers[email] = Date.now();
+  console.log(`${email} is now online.`);
 
-    onlineDevices[deviceId] = { token, lastSeen: Date.now() };
-
-    console.log(`Device ${deviceId} is online!`);
-    return res.status(200).json({ msg: 'Device marked online' });
+  return res.status(200).json({ msg: `${email} marked online.` });
 });
+
+// GET /online - list all online users
+router.get('/online', (req, res) => {
+  const now = Date.now();
+  const onlineList = [];
+
+  // Filter users active in last 20 seconds
+  for (const email in onlineUsers) {
+    if (now - onlineUsers[email] <= 20000) {
+      onlineList.push(email);
+    }
+  }
+
+  return res.status(200).json({ onlineUsers: onlineList });
+});
+
+// Background cleanup to remove users offline for more than 20s
+setInterval(() => {
+  const now = Date.now();
+  for (const email in onlineUsers) {
+    if (now - onlineUsers[email] > 20000) {
+      console.log(`${email} is now offline.`);
+      delete onlineUsers[email];
+    }
+  }
+}, 5000);
 module.exports = router;
