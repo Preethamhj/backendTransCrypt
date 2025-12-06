@@ -4,31 +4,35 @@ const User = require("../models/auth");
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 
-const JWT_SECRET ="yourSuperSecretKey123";
+const JWT_SECRET = process.env.JWT_SECRET || "yourSuperSecretKey123";
+const ONLINE_TIMEOUT = parseInt(process.env.ONLINE_TIMEOUT) || 120000;
 
-// REGISTER
+let onlineUsers = {};
+
+// ----------------- REGISTER -----------------
 router.post("/register", async (req, res) => {
   try {
     const { name, email, password } = req.body;
+    if (!name || !email || !password) return res.status(400).json({ msg: "All fields required" });
 
-    const exists = await User.findOne({ email });
-    if (exists) return res.status(400).json({ msg: "Email already exists" });
+    if (await User.findOne({ email })) return res.status(400).json({ msg: "Email exists" });
 
     const hashed = await bcrypt.hash(password, 10);
     const user = new User({ name, email, password: hashed });
     await user.save();
 
-    res.json({ msg: "User registered successfully" });
+    res.json({ msg: "Registered successfully" });
   } catch (err) {
     console.error(err);
     res.status(500).json({ msg: "Server error" });
   }
 });
 
-// LOGIN
+// ----------------- LOGIN -----------------
 router.post("/login", async (req, res) => {
   try {
     const { email, password } = req.body;
+    if (!email || !password) return res.status(400).json({ msg: "Email & password required" });
 
     const user = await User.findOne({ email });
     if (!user) return res.status(400).json({ msg: "Invalid credentials" });
@@ -37,7 +41,6 @@ router.post("/login", async (req, res) => {
     if (!match) return res.status(400).json({ msg: "Invalid credentials" });
 
     const token = jwt.sign({ id: user._id }, JWT_SECRET, { expiresIn: "7d" });
-
     res.json({ msg: "Login success", token });
   } catch (err) {
     console.error(err);
@@ -45,38 +48,34 @@ router.post("/login", async (req, res) => {
   }
 });
 
-// Online users tracking
-let onlineUsers = {};
-
-// POST /online - mark user online
+// ----------------- ONLINE USERS -----------------
 router.post("/online", (req, res) => {
   const { email } = req.body;
-  if (!email) return res.status(400).json({ msg: "Email is required" });
+  if (!email) return res.status(400).json({ msg: "Email required" });
 
   onlineUsers[email] = Date.now();
-  console.log(`${email} is now online.`);
+  console.log(`${email} is online`);
   res.json({ msg: `${email} marked online.` });
 });
 
-// GET /online - list all online users
 router.get("/online", (req, res) => {
   const now = Date.now();
   const list = [];
   for (const email in onlineUsers) {
-    if (now - onlineUsers[email] <= 20000) list.push(email);
+    if (now - onlineUsers[email] <= ONLINE_TIMEOUT) list.push(email);
   }
   res.json({ onlineUsers: list });
 });
 
-// Cleanup offline users every 5s
+// Cleanup offline users
 setInterval(() => {
   const now = Date.now();
   for (const email in onlineUsers) {
-    if (now - onlineUsers[email] > 50000000) {
-      console.log(`${email} is now offline.`);
+    if (now - onlineUsers[email] > ONLINE_TIMEOUT) {
+      console.log(`${email} is offline`);
       delete onlineUsers[email];
     }
   }
-}, 5000);
+}, 30000);
 
 module.exports = router;

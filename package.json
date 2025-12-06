@@ -19,6 +19,8 @@
     "http": "^0.0.1-security",
     "jsonwebtoken": "^9.0.3",
     "mongoose": "^9.0.1",
+    "socket.io": "^4.8.1",
+    "stun": "^2.1.0",
     "ws": "^8.18.3"
   }
 }
