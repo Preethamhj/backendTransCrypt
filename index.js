@@ -1,66 +1,74 @@
-require('dotenv').config(); // must be at the very top
+require("dotenv").config();
 const express = require("express");
 const http = require("http");
 const WebSocket = require("ws");
 const mongoose = require("mongoose");
+
 const authRoutes = require("./routes/auth");
 
 const app = express();
-const port = process.env.PORT || 5000;
+const PORT = process.env.PORT || 5000;
 
 app.use(express.json());
-const onlineUsers = new Map(); 
-// key: socket_id   value: user info (id, name)
 
-const mongoURI = process.env.MONGO_URL;
-mongoose.connect(mongoURI)
-  .then(() => console.log("MongoDB Atlas connected"))
+// ------------------- MongoDB -------------------
+mongoose.connect(process.env.MONGO_URL)
+  .then(() => console.log("MongoDB Connected"))
   .catch(err => {
-    console.error("MongoDB connection error:", err);
-    process.exit(1); 
+    console.log("Mongo Error:", err);
+    process.exit(1);
   });
 
 app.use("/api/auth", authRoutes);
 
+// ------------------- WebSocket -------------------
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
-let socketCounter = 0; // unique socket id generator
+const users = new Map(); // key: ws | val: {id, name}
+let counter = 1;
 
-wss.on("connection", (ws) => {
-  const socketId = `s_${socketCounter++}`;
-
-  console.log("Client connected:", socketId);
-
-  // TEMP until login is integrated
-  onlineUsers.set(socketId, {
-    id: socketId,
-    name: "Unknown User",
+// broadcast helper
+function broadcast(obj) {
+  const data = JSON.stringify(obj);
+  wss.clients.forEach(ws => {
+    if (ws.readyState === WebSocket.OPEN) ws.send(data);
   });
+}
 
-  // Notify THIS client of the current list
+wss.on("connection", ws => {
+  const id = "s_" + counter++;
+  users.set(ws, { id, name: "Unknown" });
+
+  console.log("Connected:", id);
+
+  // send full user list to this client
   ws.send(JSON.stringify({
     type: "online_users",
-    users: Array.from(onlineUsers.values())
+    users: [...users.values()]
   }));
 
-  // Notify EVERYONE that a user came online
-  broadcast({
-    type: "user_joined",
-    user: onlineUsers.get(socketId)
+  // wait for register before telling others
+  ws.on("message", msg => {
+    const data = JSON.parse(msg.toString());
+
+    if (data.type === "register") {
+      const user = users.get(ws);
+      user.name = data.name;
+
+      // send updated list to all
+      broadcast({
+        type: "online_users",
+        users: [...users.values()]
+      });
+    }
   });
 
-  // When server receives message
-  ws.on("message", (msg) => {
-    console.log("WS Message:", msg.toString());
-  });
-
-  // On disconnect
   ws.on("close", () => {
-    const user = onlineUsers.get(socketId);
-    onlineUsers.delete(socketId);
+    const user = users.get(ws);
+    users.delete(ws);
 
-    console.log("Client disconnected:", socketId);
+    console.log("Disconnected:", user.id);
 
     broadcast({
       type: "user_left",
@@ -69,16 +77,4 @@ wss.on("connection", (ws) => {
   });
 });
 
-function broadcast(data) {
-  const json = JSON.stringify(data);
-
-  wss.clients.forEach((client) => {
-    if (client.readyState === WebSocket.OPEN) {
-      client.send(json);
-    }
-  });
-}
-
-
-
-server.listen(port, () => console.log(`Server running on port ${port}`));
+server.listen(PORT, () => console.log(`Server running on ${PORT}`));
