@@ -21,6 +21,21 @@ mongoose.connect(mongoURI)
 app.use("/api/auth", authRoutes);
 
 const server = http.createServer(app);
+const wss = new WebSocket.Server({ server });
+
+wss.on("connection", (ws) => {
+  console.log("Client connected via WebSocket");
+
+  ws.send(JSON.stringify({ msg: "Connected to TransCrypt Cloud" }));
+
+  ws.on("message", (msg) => {
+    console.log("Received:", msg.toString());
+  });
+
+  ws.on("close", () => {
+    console.log("Client disconnected");
+  });
+});
 
 
 server.listen(port, () => console.log(`Server running on port ${port}`));
