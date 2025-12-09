@@ -5,9 +5,6 @@ const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 
 const JWT_SECRET = process.env.JWT_SECRET || "yourSuperSecretKey123";
-const ONLINE_TIMEOUT = parseInt(process.env.ONLINE_TIMEOUT) || 120000;
-
-let onlineUsers = {};
 
 // ----------------- REGISTER -----------------
 router.post("/register", async (req, res) => {
@@ -47,35 +44,4 @@ router.post("/login", async (req, res) => {
     res.status(500).json({ msg: "Server error" });
   }
 });
-
-// ----------------- ONLINE USERS -----------------
-router.post("/online", (req, res) => {
-  const { email } = req.body;
-  if (!email) return res.status(400).json({ msg: "Email required" });
-
-  onlineUsers[email] = Date.now();
-  console.log(`${email} is online`);
-  res.json({ msg: `${email} marked online.` });
-});
-
-router.get("/online", (req, res) => {
-  const now = Date.now();
-  const list = [];
-  for (const email in onlineUsers) {
-    if (now - onlineUsers[email] <= ONLINE_TIMEOUT) list.push(email);
-  }
-  res.json({ onlineUsers: list });
-});
-
-// Cleanup offline users
-setInterval(() => {
-  const now = Date.now();
-  for (const email in onlineUsers) {
-    if (now - onlineUsers[email] > ONLINE_TIMEOUT) {
-      console.log(`${email} is offline`);
-      delete onlineUsers[email];
-    }
-  }
-}, 30000);
-
 module.exports = router;
