@@ -3,7 +3,7 @@ const express = require("express");
 const http = require("http");
 const WebSocket = require("ws");
 const mongoose = require("mongoose");
-const User = require("./models/auth");
+const User = require("./models/auth"); // your mongoose user model
 
 const authRoutes = require("./routes/auth");
 
@@ -26,10 +26,17 @@ app.use("/api/auth", authRoutes);
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
-const users = new Map(); // ws => { id, userId, name, email, publicIP }
+/*
+  users: Map<WebSocket, {
+    id: socketId,           // s_#
+    userId: <db user id>?,  // mongodb id when registered
+    name, email, publicIP
+  }>
+*/
+const users = new Map();
 let counter = 1;
 
-// broadcast helper
+// helpers
 function broadcast(obj) {
   const data = JSON.stringify(obj);
   wss.clients.forEach(ws => {
@@ -37,11 +44,31 @@ function broadcast(obj) {
   });
 }
 
-wss.on("connection", ws => {
+function findWsBySocketId(socketId) {
+  for (const [ws, info] of users.entries()) {
+    if (info.id === socketId) return ws;
+  }
+  return null;
+}
 
+function findWsByUserId(userId) {
+  for (const [ws, info] of users.entries()) {
+    if (info.userId === userId) return ws;
+  }
+  return null;
+}
+
+function findWsByEitherId(eitherId) {
+  // either socketId or userId
+  let ws = findWsBySocketId(eitherId);
+  if (ws) return ws;
+  return findWsByUserId(eitherId);
+}
+
+wss.on("connection", ws => {
   const socketId = "s_" + counter++;
 
-  // Placeholder user (unregistered)
+  // placeholder (unregistered)
   users.set(ws, {
     id: socketId,
     userId: null,
@@ -50,34 +77,40 @@ wss.on("connection", ws => {
     publicIP: null
   });
 
-  console.log("Client connected:", socketId);
+  console.log(`[WS] Client connected: ${socketId}`);
 
-  // Send list of online users to new connection
+  // Immediately send register_ack with socketId (client expects this)
+  ws.send(JSON.stringify({
+    type: "register_ack",
+    socketId
+  }));
+
+  // send current online_users to this new socket (and broadcast will update others when register happens)
   ws.send(JSON.stringify({
     type: "online_users",
     users: [...users.values()]
   }));
 
-  // helper: find ws by userId
-  function findWsByUserId(userId) {
-    for (const [wsocket, info] of users.entries()) {
-      if (info.userId === userId) return wsocket;
+  ws.on("message", async raw => {
+    let data;
+    try {
+      data = JSON.parse(raw.toString());
+    } catch (err) {
+      console.log("[WS] Invalid JSON:", raw.toString());
+      return;
     }
-    return null;
-  }
 
-  // incoming WS messages
-  ws.on("message", async msg => {
-    const data = JSON.parse(msg.toString());
-    console.log("WS Message:", data);
+    console.log("[WS] Message from", socketId, ":", data);
 
-    // ---------------- REGISTER -------------------
+    // ---------- REGISTER ----------
     if (data.type === "register") {
       try {
         const userId = data.userId;
         const dbUser = await User.findById(userId).lean();
-
-        if (!dbUser) return;
+        if (!dbUser) {
+          console.log(`[WS] Register failed: user ${userId} not found`);
+          return;
+        }
 
         users.set(ws, {
           id: socketId,
@@ -87,66 +120,91 @@ wss.on("connection", ws => {
           publicIP: null
         });
 
-        console.log(`${socketId} registered as ${dbUser.name}`);
+        console.log(`[WS] ${socketId} registered as ${dbUser.name} (${dbUser._id})`);
 
-        // broadcast updated list
         broadcast({
           type: "online_users",
           users: [...users.values()]
         });
 
+        return;
       } catch (err) {
-        console.error("Register error:", err);
+        console.error("[WS] Register error:", err);
+        return;
       }
     }
 
-    // ---------------- PUBLIC IP EXCHANGE -------------------
+    // ---------- PUBLIC IP ----------
     if (data.type === "public_ip") {
-      const user = users.get(ws);
-      user.publicIP = data.ip;
+      // data: { type: "public_ip", ip, to: <socketId|userId>, name? }
+      const sender = users.get(ws);
+      if (!sender) return;
 
-      console.log(`Public IP from ${user.name}: ${data.ip}`);
+      sender.publicIP = data.ip;
+      console.log(`[WS] PUBLIC_IP from ${sender.name} (${sender.userId || sender.id}): ${data.ip} -> target ${data.to}`);
 
-      const targetUserId = data.to;
-      const targetWs = findWsByUserId(targetUserId);
-
-      if (targetWs) {
+      // Find target by either socketId or userId
+      const targetWs = findWsByEitherId(data.to);
+      if (targetWs && targetWs.readyState === WebSocket.OPEN) {
         targetWs.send(JSON.stringify({
           type: "public_ip",
           ip: data.ip,
-          from: user.userId,
-          name: user.name
+          from: sender.userId || sender.id,
+          name: sender.name
         }));
+        console.log(`[WS] Forwarded PUBLIC_IP to ${data.to}`);
+      } else {
+        console.log(`[WS] PUBLIC_IP target not found: ${data.to}`);
       }
-
       return;
     }
 
-    // ---------------- WebRTC / Signals -------------------
-    if (data.type === "signal_to") {
-      const targetWs = findWsByUserId(data.to);
-      if (targetWs) {
+    // ---------- SIGNAL (from client we expect type: "signal") ----------
+    // Support both "signal" and "signal_to" for backwards compatibility.
+    // Client format expected: { type: "signal", to: <socketId|userId>, data: { action: "...", ... }, from?: <senderId> }
+    if (data.type === "signal" || data.type === "signal_to") {
+      const payload = data.data || data.payload || data.signal;
+      const toId = data.to;
+      const fromId = data.from || (users.get(ws)?.userId || users.get(ws)?.id);
+
+      if (!payload || !toId) {
+        console.log("[WS] Bad signal message - missing 'to' or 'data'");
+        return;
+      }
+
+      const targetWs = findWsByEitherId(toId);
+      if (targetWs && targetWs.readyState === WebSocket.OPEN) {
+        // forward in shape client expects: { type: "signal", data: payload, from: <fromId> }
         targetWs.send(JSON.stringify({
           type: "signal",
-          from: data.from,
-          data: data.data
+          from: fromId,
+          data: payload
         }));
+        console.log(`[WS] Forwarded SIGNAL action='${payload.action}' from ${fromId} -> ${toId}`);
+      } else {
+        console.log(`[WS] SIGNAL target not found or not open: ${toId}`);
       }
       return;
     }
 
+    // unknown type
+    console.log("[WS] Unknown message type:", data.type);
   });
 
-  // ---------------- DISCONNECT -------------------
   ws.on("close", () => {
     const usr = users.get(ws);
     users.delete(ws);
-    console.log("Client disconnected:", usr.id);
+    console.log(`[WS] Client disconnected: ${usr?.id || socketId}`);
 
+    // broadcast user_left
     broadcast({
       type: "user_left",
       user: usr
     });
+  });
+
+  ws.on("error", (err) => {
+    console.error("[WS] socket error:", err);
   });
 });
 
