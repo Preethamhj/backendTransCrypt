@@ -26,7 +26,7 @@ app.use("/api/auth", authRoutes);
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
-const users = new Map(); // key: ws | val: {id, name}
+const users = new Map();  // ws => { id, userId, name, email }
 let counter = 1;
 
 // broadcast helper
@@ -38,49 +38,68 @@ function broadcast(obj) {
 }
 
 wss.on("connection", ws => {
-  const id = "s_" + counter++;
-  users.set(ws, { id, name: "Unknown" });
+  const socketId = "s_" + counter++;
 
-  console.log("Connected:", id);
+  // Temporary placeholder until registration
+  users.set(ws, {
+    id: socketId,
+    userId: null,
+    name: "Unknown User",
+    email: "unknown"
+  });
 
-  // send full user list to this client
+  console.log("Client connected:", socketId);
+
+  // Send current online list to this user
   ws.send(JSON.stringify({
     type: "online_users",
     users: [...users.values()]
   }));
 
-  // wait for register before telling others
-  ws.on("message", async(msg) => {
+  // Handle incoming messages
+  ws.on("message", async (msg) => {
     const data = JSON.parse(msg.toString());
+    console.log("WS Message:", data);
 
+    // Handle register event
     if (data.type === "register") {
-    const userId = data.userId;  // sent from Flutter (JWT decoded ID)
-    // Fetch user from DB
-    const dbUser = await User.findById(userId).lean();
-    if (dbUser) {
-        onlineUsers.set(ws, {
-            id: socketId,
-            userId: dbUser._id.toString(),
-            name: dbUser.name,
-            email: dbUser.email,
+      try {
+        const userId = data.userId;
+        const dbUser = await User.findById(userId).lean();
+
+        if (!dbUser) {
+          console.log("User not found:", userId);
+          return;
+        }
+
+        // Update user info
+        users.set(ws, {
+          id: socketId,
+          userId: dbUser._id.toString(),
+          name: dbUser.name,
+          email: dbUser.email
         });
-    }
 
-    // Send updated list to everyone
-    broadcast({
-        type: "online_users",
-        users: [...onlineUsers.values()],
-    });
+        console.log(`${socketId} registered as ${dbUser.name}`);
 
-    console.log(`${socketId} registered as ${dbUser.name}`);
+        // Broadcast updated list
+        broadcast({
+          type: "online_users",
+          users: [...users.values()]
+        });
+
+      } catch (err) {
+        console.error("Register error:", err);
+      }
     }
   });
 
+  // On disconnect
   ws.on("close", () => {
     const user = users.get(ws);
     users.delete(ws);
 
-    console.log("Disconnected:", user.id);
+    console.log("Client disconnected:", user.id);
 
     broadcast({
       type: "user_left",
@@ -88,5 +107,6 @@ wss.on("connection", ws => {
     });
   });
 });
+
 
 server.listen(PORT, () => console.log(`Server running on ${PORT}`));
