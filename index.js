@@ -26,7 +26,7 @@ app.use("/api/auth", authRoutes);
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
-const users = new Map();  // ws => { id, userId, name, email }
+const users = new Map(); // ws => { id, userId, name, email, publicIP }
 let counter = 1;
 
 // broadcast helper
@@ -38,111 +38,58 @@ function broadcast(obj) {
 }
 
 wss.on("connection", ws => {
+
   const socketId = "s_" + counter++;
 
-  // Temporary placeholder until registration
+  // Placeholder user (unregistered)
   users.set(ws, {
     id: socketId,
     userId: null,
     name: "Unknown User",
-    email: "unknown"
+    email: "unknown",
+    publicIP: null
   });
 
   console.log("Client connected:", socketId);
 
-  // Send current online list to this user
+  // Send list of online users to new connection
   ws.send(JSON.stringify({
     type: "online_users",
     users: [...users.values()]
   }));
 
   // helper: find ws by userId
-function findWsByUserId(userId) {
-  for (const [ws, info] of users.entries()) {
-    if (info.userId === userId) return ws;
-  }
-  return null;
-}
-
-ws.on("message", async (msg) => {
-  const data = JSON.parse(msg.toString());
-  console.log("WS Message:", data);
-
-  // registration handling (already implemented)...
-
-  // ---- P2P Request (initiator asks target for permission) ----
-  if (data.type === "p2p_request") {
-    const targetId = data.to;
-    const targetWs = findWsByUserId(targetId);
-    if (!targetWs) {
-      // notify caller target not available
-      ws.send(JSON.stringify({ type: "p2p_error", message: "Target offline", to: data.from }));
-      return;
+  function findWsByUserId(userId) {
+    for (const [wsocket, info] of users.entries()) {
+      if (info.userId === userId) return wsocket;
     }
-
-    // forward request to callee
-    targetWs.send(JSON.stringify({
-      type: "p2p_request",
-      from: data.from,
-      meta: data.meta || {}
-    }));
+    return null;
   }
 
-  // ---- P2P Response (callee accepts/declines) ----
-  if (data.type === "p2p_response") {
-    const callerId = data.to;
-    const callerWs = findWsByUserId(callerId);
-    if (callerWs) {
-      callerWs.send(JSON.stringify({
-        type: "p2p_response",
-        from: data.from,
-        accepted: !!data.accepted
-      }));
-    }
-  }
-
-  // ---- WebRTC Offer/Answer & ICE relaying ----
-  if (data.type === "webrtc_offer" || data.type === "webrtc_answer" || data.type === "ice_candidate") {
-    const targetId = data.to;
-    const targetWs = findWsByUserId(targetId);
-    if (targetWs) {
-      targetWs.send(JSON.stringify(data)); // relay entire object
-    } else {
-      ws.send(JSON.stringify({ type: "p2p_error", message: "Target offline", to: data.from }));
-    }
-  }
-
-  // ... keep existing register handling and others
-});
-
-
-  // Handle incoming messages
-  ws.on("message", async (msg) => {
+  // incoming WS messages
+  ws.on("message", async msg => {
     const data = JSON.parse(msg.toString());
     console.log("WS Message:", data);
 
-    // Handle register event
+    // ---------------- REGISTER -------------------
     if (data.type === "register") {
       try {
         const userId = data.userId;
         const dbUser = await User.findById(userId).lean();
 
-        if (!dbUser) {
-          console.log("User not found:", userId);
-          return;
-        }
+        if (!dbUser) return;
 
-        // Update user info
         users.set(ws, {
           id: socketId,
           userId: dbUser._id.toString(),
           name: dbUser.name,
-          email: dbUser.email
+          email: dbUser.email,
+          publicIP: null
         });
 
         console.log(`${socketId} registered as ${dbUser.name}`);
 
-        // Broadcast updated list
+        // broadcast updated list
         broadcast({
           type: "online_users",
           users: [...users.values()]
@@ -152,21 +99,55 @@ ws.on("message", async (msg) => {
         console.error("Register error:", err);
       }
     }
+
+    // ---------------- PUBLIC IP EXCHANGE -------------------
+    if (data.type === "public_ip") {
+      const user = users.get(ws);
+      user.publicIP = data.ip;
+
+      console.log(`Public IP from ${user.name}: ${data.ip}`);
+
+      const targetUserId = data.to;
+      const targetWs = findWsByUserId(targetUserId);
+
+      if (targetWs) {
+        targetWs.send(JSON.stringify({
+          type: "public_ip",
+          ip: data.ip,
+          from: user.userId,
+          name: user.name
+        }));
+      }
+
+      return;
+    }
+
+    // ---------------- WebRTC / Signals -------------------
+    if (data.type === "signal_to") {
+      const targetWs = findWsByUserId(data.to);
+      if (targetWs) {
+        targetWs.send(JSON.stringify({
+          type: "signal",
+          from: data.from,
+          data: data.data
+        }));
+      }
+      return;
+    }
+
   });
 
-  // On disconnect
+  // ---------------- DISCONNECT -------------------
   ws.on("close", () => {
-    const user = users.get(ws);
+    const usr = users.get(ws);
     users.delete(ws);
-
-    console.log("Client disconnected:", user.id);
+    console.log("Client disconnected:", usr.id);
 
     broadcast({
       type: "user_left",
-      user
+      user: usr
     });
   });
 });
-
 
 server.listen(PORT, () => console.log(`Server running on ${PORT}`));
