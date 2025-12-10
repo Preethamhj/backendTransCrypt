@@ -56,6 +56,66 @@ wss.on("connection", ws => {
     users: [...users.values()]
   }));
 
+  // helper: find ws by userId
+function findWsByUserId(userId) {
+  for (const [ws, info] of users.entries()) {
+    if (info.userId === userId) return ws;
+  }
+  return null;
+}
+
+ws.on("message", async (msg) => {
+  const data = JSON.parse(msg.toString());
+  console.log("WS Message:", data);
+
+  // registration handling (already implemented)...
+
+  // ---- P2P Request (initiator asks target for permission) ----
+  if (data.type === "p2p_request") {
+    const targetId = data.to;
+    const targetWs = findWsByUserId(targetId);
+    if (!targetWs) {
+      // notify caller target not available
+      ws.send(JSON.stringify({ type: "p2p_error", message: "Target offline", to: data.from }));
+      return;
+    }
+
+    // forward request to callee
+    targetWs.send(JSON.stringify({
+      type: "p2p_request",
+      from: data.from,
+      meta: data.meta || {}
+    }));
+  }
+
+  // ---- P2P Response (callee accepts/declines) ----
+  if (data.type === "p2p_response") {
+    const callerId = data.to;
+    const callerWs = findWsByUserId(callerId);
+    if (callerWs) {
+      callerWs.send(JSON.stringify({
+        type: "p2p_response",
+        from: data.from,
+        accepted: !!data.accepted
+      }));
+    }
+  }
+
+  // ---- WebRTC Offer/Answer & ICE relaying ----
+  if (data.type === "webrtc_offer" || data.type === "webrtc_answer" || data.type === "ice_candidate") {
+    const targetId = data.to;
+    const targetWs = findWsByUserId(targetId);
+    if (targetWs) {
+      targetWs.send(JSON.stringify(data)); // relay entire object
+    } else {
+      ws.send(JSON.stringify({ type: "p2p_error", message: "Target offline", to: data.from }));
+    }
+  }
+
+  // ... keep existing register handling and others
+});
+
+
   // Handle incoming messages
   ws.on("message", async (msg) => {
     const data = JSON.parse(msg.toString());
