@@ -3,6 +3,7 @@ const express = require("express");
 const http = require("http");
 const WebSocket = require("ws");
 const mongoose = require("mongoose");
+const User = require("./models/User");
 
 const authRoutes = require("./routes/auth");
 
@@ -49,18 +50,29 @@ wss.on("connection", ws => {
   }));
 
   // wait for register before telling others
-  ws.on("message", msg => {
+  ws.on("message", async(msg) => {
     const data = JSON.parse(msg.toString());
 
     if (data.type === "register") {
-      const user = users.get(ws);
-      user.name = data.name;
+    const userId = data.userId;  // sent from Flutter (JWT decoded ID)
+    // Fetch user from DB
+    const dbUser = await User.findById(userId).lean();
+    if (dbUser) {
+        onlineUsers.set(ws, {
+            id: socketId,
+            userId: dbUser._id.toString(),
+            name: dbUser.name,
+            email: dbUser.email,
+        });
+    }
 
-      // send updated list to all
-      broadcast({
+    // Send updated list to everyone
+    broadcast({
         type: "online_users",
-        users: [...users.values()]
-      });
+        users: [...onlineUsers.values()],
+    });
+
+    console.log(`${socketId} registered as ${dbUser.name}`);
     }
   });
 
