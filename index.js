@@ -3,7 +3,7 @@ const express = require("express");
 const http = require("http");
 const WebSocket = require("ws");
 const mongoose = require("mongoose");
-const User = require("./models/User");
+const User = require("./models/auth");
 
 const authRoutes = require("./routes/auth");
 
