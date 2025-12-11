@@ -79,7 +79,8 @@ wss.on("connection", ws => {
     if (data.type === "signal") {
       const targetWs = findWsById(data.to);
       if (!targetWs) return;
-      targetWs.send(JSON.stringify({ type: "signal", from: sender.id, data: data.data }));
+      const forwardData = { ...data, from: sender.id };
+targetWs.send(JSON.stringify(forwardData));
       return;
     }
   });
